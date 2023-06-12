@@ -1,0 +1,273 @@
+---
+title: "Final Project"
+author: "Aksheytha Chelikavada"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: 
+    latex_engine: xelatex
+  word_document: default
+date: "2023-05-14"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# 1 DATA PREPARATION
+
+## Part 1.1
+```{r, message = FALSE}
+library(dplyr)
+saipe_raw <- read.csv("C:\\Users\\akshe\\Downloads\\SAIPE_04-14-2023.csv")
+
+saipe_mn <- saipe_raw %>% filter(!(Name == "Minnesota")) %>% filter(!(Name == "United States"))%>% select(Year, FIPS = ID, Name, Pop = Poverty.Universe, Poverty = Number.in.Poverty) 
+```
+
+Find the largest county, and the nine largest counties by population
+```{r}
+largest_county_pop <- saipe_mn %>% group_by(FIPS, Name) %>% summarize(Pop = mean(Pop, na.rm = TRUE)) %>%  arrange(desc(Pop)) %>% head(n = 9)
+largest_county_pop
+
+FIPSvalue <- saipe_mn %>% group_by(FIPS, Name) %>% summarize(Pop = mean(Pop, na.rm = TRUE)) %>%  arrange(desc(Pop)) %>% head(n = 9) %>% pull(FIPS)
+
+biggest_county <- saipe_mn %>% group_by(FIPS, Name) %>% summarize(Pop = mean(Pop, na.rm = TRUE)) %>%  arrange(desc(Pop)) %>% head(n = 1)
+biggest_county
+```
+
+Make a time plot showing the number in poverty for each of the nine largest counties
+```{r, message = FALSE}
+library(dplyr)
+library(ggplot2)
+library(gtrendsR)
+library(tsibble)
+library(feasts)
+
+saipe_mn_tsibble <- saipe_mn %>% as_tsibble(index = Year, key = c(FIPS, Name)) %>% filter(FIPS %in% FIPSvalue)
+
+saipe_mn_tsibble  %>% autoplot(Poverty) + facet_wrap(vars(Name))
+```
+
+
+## Part 1.2
+```{r, message = FALSE}
+library(stringr)
+library(lubridate)
+library(tidyverse)
+library(readr)
+
+cntySnap_raw <- read.csv("C:\\Users\\akshe\\Downloads\\cntysnap.csv",skip = 4, sep ="," )
+
+mnCnty <- cntySnap_raw %>% filter(grepl("MN", Name))
+
+code_mnCnty <- mnCnty %>% mutate(FIPS = paste("27",str_pad(County.FIPS.code, width = 3, pad = "0"), sep = ""))
+
+pivot_code_mnCnty <- code_mnCnty %>% pivot_longer(cols = starts_with("Jul")) %>% mutate(value = as.integer(str_remove(value, ","))) %>% filter(FIPS %in% FIPSvalue) %>% mutate(Year = year(yearmonth(name))) %>% as_tsibble(index = Year, key = c(FIPS, Name))
+
+pivot_code_mnCnty  %>% ggplot2::autoplot((value)) 
+```
+
+
+## Part 1.3
+```{r}
+raw_irs <- read.csv("C:\\Users\\akshe\\Downloads\\irs.csv", skip = 4)
+
+ts_irs <- raw_irs %>% filter(Name == "Minnesota") %>% mutate(Poor.exemptions = as.integer(str_remove(Poor.exemptions, ","))) %>% as_tsibble(index = Year)
+
+ts_irs %>% autoplot(Poor.exemptions)
+```
+
+
+## Part 1.4
+```{r, message = FALSE}
+library(lubridate)
+library(tidyverse)
+library(readr)
+
+join_ts_irs <- raw_irs %>% filter(Name == "Minnesota") %>% dplyr::select(Year, Poor.exemptions) %>% mutate(Poor.exemptions = as.integer(str_remove(Poor.exemptions, ","))) %>% as_tsibble(index = Year)
+
+pivot_code_mnCnty_all <- code_mnCnty %>% pivot_longer(cols = starts_with("Jul")) %>% mutate(value = as.integer(str_remove(value, ","))) %>%  mutate(Year = year(yearmonth(name))) %>% as_tsibble(index = Year, key = c(FIPS, Name))
+
+join_mnCnty_all <- pivot_code_mnCnty_all %>% dplyr::select(FIPS, value, Year)
+
+new_join_mnCnty_all <- join_mnCnty_all %>% mutate(FIPS = as.integer(FIPS))
+
+saipe_mn_join1 <- left_join(saipe_mn, new_join_mnCnty_all, by=c('Year','FIPS'))  
+
+final_join_ts <- left_join(saipe_mn_join1, join_ts_irs, by = 'Year') %>% filter(Year >= 1997) %>% as_tsibble(index = Year, key = c(FIPS, Name.x))
+
+graph_final_ts <- final_join_ts %>% filter(FIPS %in% FIPSvalue)
+
+graph_final_ts %>% autoplot(Pop)
+graph_final_ts %>% autoplot(Poverty)
+graph_final_ts %>% autoplot(value)
+graph_final_ts %>% autoplot(Poor.exemptions)
+
+graph_final_ts %>% as_tibble() %>% ggplot(aes(x = Pop, y = Poverty, color = Name.x)) + geom_point() + facet_wrap(vars(Name.x), scales = "free")
+graph_final_ts %>% as_tibble() %>% ggplot(aes(x = value, y = Poverty, color = Name.x)) + geom_point() + facet_wrap(vars(Name.x), scales = "free")
+graph_final_ts %>% as_tibble() %>% ggplot(aes(x = Poor.exemptions, y = Poverty, color = Name.x)) + geom_point() + facet_wrap(vars(Name.x), scales = "free")
+```
+
+
+# 2 Linear Models
+
+## Part 2.1
+```{r, message = FALSE}
+library(forecast)
+library(dplyr)
+library(lubridate)
+library(fpp3)
+test_final_ts <-  final_join_ts %>% model(t1 = TSLM(log(Poverty) ~ log(Pop)),
+                                           t2 = TSLM(log(Poverty) ~ log(value)),
+                                           t3 = TSLM(log(Poverty) ~ log(Poor.exemptions)),
+                                           t4 = TSLM(log(Poverty) ~ log(Poor.exemptions)+log(value)),
+                                           t5 = TSLM(log(Poverty) ~ log(Poor.exemptions)+log(Pop)),
+                                           t6 = TSLM(log(Poverty) ~ log(Pop)+ log(value)),
+                                           t7 = TSLM(log(Poverty) ~ log(Pop) + log(value) + log(Poor.exemptions)))
+
+
+glance(test_final_ts) |> group_by(.model) %>% summarise(CV = sum(CV), AIC = sum(AIC)) %>% arrange(CV, AIC) |>
+  dplyr::select(.model,CV, AIC)
+```
+The model that does the best across all counties is t6 which is TSLM(log(Poverty) ~ log(Pop)+ log(value)). This best model includes poverty, population, and value. 
+
+```{r}
+bestModel <- final_join_ts %>% model(TSLM(log(Poverty) ~ log(Pop)+ log(value)))
+
+bestModel %>% filter(FIPS %in% FIPSvalue) %>% augment() %>% autoplot(Poverty) + geom_line(aes(y = .fitted), color = "Black") + facet_wrap(vars(Name.x), scales = "free_y") + theme(legend.position = "none")  
+```
+
+
+## Part 2.2
+```{r}
+plotRes<- bestModel %>% filter(FIPS %in% FIPSvalue) %>% augment()
+
+autoplot(plotRes, .innov) + facet_wrap(vars(Name.x))
+
+allCountyFIPS <- bestModel %>% pull(FIPS)
+
+bestModel %>% augment() %>% features(.innov, ljung_box) %>% arrange(lb_pvalue)
+```
+I found one county that was significantly different from white noise. The FIPS code for the county is 27097 and the name is Morrison County.
+
+Because this p-value is so significantly different from white noise, I an going to make a residual plot of it
+```{r}
+bestModel %>% filter(FIPS == 27097) %>% augment() %>% autoplot(Poverty) + geom_line(aes(y = .fitted), color = "Magenta") + facet_wrap(vars(Name.x), scales = "free") + theme(legend.position = "none") 
+```
+This model did a pretty good job as we have a few p values below 0.05. Except for one exception, Morrison county got a p value of 0.0009.
+
+
+# 3 Stochastic Models
+
+## Part 3.1
+```{r}
+saipe_hen <- saipe_mn %>% filter(!(Year %in% c(1996, 1989, 1993, 1995, 1997))) %>% as_tsibble(index = Year, key = c(FIPS, Name)) %>% filter(FIPS == 27053)
+
+hen_model <-  saipe_hen %>% model(naive = NAIVE(log(Poverty)),
+                                           mean = MEAN(log(Poverty)),
+                                           ses = ETS(log(Poverty) ~ error("A") + trend("N") + season("N")),
+                                           adDamp = ETS(log((Poverty)) ~ error('A') + trend('Ad')),
+                                           ad = ETS(log((Poverty)) ~ error('A') + trend('A')),
+                                           mul = ETS(log((Poverty)) ~ error('M') + trend('A')),
+                                           arima = ARIMA(log(Poverty)))
+
+hen_model  %>% forecast(h = '5 year') %>%  autoplot(saipe_hen) + facet_wrap(.~.model)
+```
+
+```{r}
+glance(hen_model)
+```
+The ARIMA model works the best.
+
+
+## Part 3.2
+```{r}
+saipe_all <- saipe_mn %>% filter(!(Year %in% c(1996, 1989, 1993, 1995, 1997))) %>% as_tsibble(index = Year, key = c(FIPS, Name)) 
+
+all_model <-  saipe_all %>% model(
+                                           ses = ETS(log(Poverty) ~ error("A") + trend("N") + season("N")),
+                                           adDamp = ETS(log((Poverty)) ~ error('A') + trend('Ad')),
+                                           ad = ETS(log((Poverty)) ~ error('A') + trend('A')),
+                                           mul = ETS(log((Poverty)) ~ error('M') + trend('A'))) 
+
+
+all_model  %>% forecast(h = '5 year') %>%  autoplot(saipe_hen) + facet_wrap(.~.model)
+
+glance(all_model) |> group_by(.model) %>% summarise(AIC = sum(AIC)) %>% arrange(AIC) |>
+  dplyr::select(.model, AIC)
+```
+The ses model did the best compared to the rest of the models. The reason why I chose ses is because it has the lowest AIC score
+
+
+## Part 3.3
+```{r}
+arimaFit <- saipe_all %>% model(ARIMA(log(Poverty)))
+arimaFit
+
+arimaFits <- saipe_all %>% model(fit100 = ARIMA(log(Poverty) ~ 1 + pdq(1,0,0)),
+                                 fit001 = ARIMA(log(Poverty) ~ 1 + pdq(0,0,1)))
+
+glance(arimaFits) |> group_by(.model) %>% summarise(AIC = sum(AIC)) %>% arrange(AIC) |>
+  dplyr::select(.model, AIC)
+```
+(1,0,0) with mean and (0,0,1) with mean are the most common. from the data, (1,0,0) did the best.
+
+
+## Part 3.4
+```{r crossValidate, cache = TRUE}
+saipe_all_tr <- saipe_all |>
+  stretch_tsibble(.init = 15, .step = 1)
+
+fit_mn <- saipe_all_tr |>
+  model(fit100 = ARIMA(log(Poverty) ~ 1 + pdq(1,0,0)),
+        ses = ETS(log(Poverty) ~ error("A") + trend("N") + season("N")))
+
+
+#{r crossValidate, cache = TRUE}
+```
+
+```{r}
+acc <- fit_mn  %>% forecast(h = 5) %>% fabletools::accuracy(data = saipe_all) 
+
+acc %>% group_by(.model) %>% summarize(sqrt(sum(RMSE*RMSE)))
+```
+fit100 is the winning model
+
+
+# 4 Forecasts
+```{r}
+county_fit <- saipe_all %>% model(fit100 = ARIMA(log(Poverty) ~ 1 + pdq(1,0,0)))
+
+forecast_county_fit <- county_fit %>% forecast(h = '5 year') %>% filter(Year == 2026)
+forecast_county_fit
+
+saipe_all_2021 <- saipe_all %>% filter(Year == 2021)
+
+predInterval <- forecast_county_fit$.mean - saipe_all_2021$Poverty
+
+percentInc <- predInterval / saipe_all_2021$Pop
+percentInc
+
+highestValues <- tail(sort(percentInc), 5)
+index <- which(percentInc %in% highestValues)
+
+fiveCounties <- saipe_all_2021[c(1,4,41,58,63), 'Name']
+fiveCounties
+```
+
+```{r, message = FALSE}
+library(usmap)
+library(ggplot2)
+forecast_county_fit_usmap <- forecast_county_fit %>% as_tibble()
+
+colnames(forecast_county_fit_usmap)[1] <- "fips"
+
+names(forecast_county_fit_usmap)
+
+plot_usmap(data = forecast_county_fit_usmap, values = ".mean", include = c("MN"), color = "blue") + 
+  scale_fill_continuous(low = "white", high = "blue", name = "Poverty Estimates", label = scales::comma) + 
+  labs(title = "Minnesota", subtitle = "Poverty Estimates for Minnesota Counties in 2026") +
+  theme(legend.position = "right")
+```
+
