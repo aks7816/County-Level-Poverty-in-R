@@ -5,4 +5,4 @@ This individual project is for the state Minnesota. For this state, I was able t
   • Create various models for the number of people in poverty in each county.
   • Use accuracy measures for model selection.
   • Provide a 5-year forecast for each county.
-  • Report your results with tables and visualizations.
+  • Report the results with tables and visualizations.
