@@ -1,4 +1,6 @@
 # County-Level-Poverty-in-R
+
+## About
 This individual project is for the state Minnesota. For this state, I was able to:
 
   • Acquire and clean poverty data for each county in one U.S. state.
